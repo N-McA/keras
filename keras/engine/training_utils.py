@@ -433,7 +433,6 @@ def weighted_masked_objective(fn):
             # Cast the mask to floatX to avoid float64 upcasting in Theano
             mask = K.cast(mask, K.floatx())
             # mask should have the same shape as score_array
-            print(score_array, mask)
             score_array *= mask
             #  the loss per batch should be proportional
             #  to the number of unmasked samples.
