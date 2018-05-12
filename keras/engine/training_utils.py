@@ -5,7 +5,9 @@ from __future__ import division
 from __future__ import print_function
 
 import copy
+import inspect
 import numpy as np
+import warnings
 
 from .. import backend as K
 from .. import losses
@@ -370,6 +372,29 @@ def make_batches(size, batch_size):
             for i in range(num_batches)]
 
 
+def objective_is_weighted_masked(fn):
+    """Checks if a function has the signature:
+    (y_true, y_pred, weights, mask)
+    """
+    # Python 3:
+    # parameters is an OrderedDict
+    fn_sig = np.array(list(inspect.signature(fn).parameters.keys()))
+    desired_sig = np.array([
+        'y_true', 'y_pred', 'weights', 'mask'
+    ])
+    
+    if len(fn_sig) == len(desired_sig):
+        if np.all(fn_sig == desired_sig):
+            return True
+        else:
+            warnings.warn((
+              'User-masked objectives must take exactly the arguments'
+              ' (y_true, y_pred, weights, mask)'
+            ))
+    return False
+    
+
+
 def weighted_masked_objective(fn):
     """Adds support for masking and sample-weighting to an objective function.
 
@@ -386,6 +411,9 @@ def weighted_masked_objective(fn):
     """
     if fn is None:
         return None
+
+    if objective_is_weighted_masked(fn):
+        return fn
 
     def weighted(y_true, y_pred, weights, mask=None):
         """Wrapper function.
@@ -405,6 +433,7 @@ def weighted_masked_objective(fn):
             # Cast the mask to floatX to avoid float64 upcasting in Theano
             mask = K.cast(mask, K.floatx())
             # mask should have the same shape as score_array
+            print(score_array, mask)
             score_array *= mask
             #  the loss per batch should be proportional
             #  to the number of unmasked samples.
