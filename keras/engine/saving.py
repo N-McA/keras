@@ -251,7 +251,6 @@ def load_model(filepath, custom_objects=None, compile=True):
     else:
         f = filepath
 
-    model = None
     try:
         # instantiate model
         model_config = f.attrs.get('model_config')
@@ -263,56 +262,58 @@ def load_model(filepath, custom_objects=None, compile=True):
         # set weights
         load_weights_from_hdf5_group(f['model_weights'], model.layers)
 
-        if compile:
-            # instantiate optimizer
-            training_config = f.attrs.get('training_config')
-            if training_config is None:
-                warnings.warn('No training configuration found in save file: '
-                              'the model was *not* compiled. '
-                              'Compile it manually.')
-                return model
-            training_config = json.loads(training_config.decode('utf-8'))
-            optimizer_config = training_config['optimizer_config']
-            optimizer = optimizers.deserialize(optimizer_config,
-                                               custom_objects=custom_objects)
+        # Early return if compilation is not required.
+        if not compile:
+            return model
 
-            # Recover loss functions and metrics.
-            loss = convert_custom_objects(training_config['loss'])
-            metrics = convert_custom_objects(training_config['metrics'])
-            sample_weight_mode = training_config['sample_weight_mode']
-            loss_weights = training_config['loss_weights']
+        # instantiate optimizer
+        training_config = f.attrs.get('training_config')
+        if training_config is None:
+            warnings.warn('No training configuration found in save file: '
+                          'the model was *not* compiled. Compile it manually.')
+            return model
+        training_config = json.loads(training_config.decode('utf-8'))
+        optimizer_config = training_config['optimizer_config']
+        optimizer = optimizers.deserialize(optimizer_config,
+                                           custom_objects=custom_objects)
 
-            # Compile model.
-            model.compile(optimizer=optimizer,
-                          loss=loss,
-                          metrics=metrics,
-                          loss_weights=loss_weights,
-                          sample_weight_mode=sample_weight_mode)
+        # Recover loss functions and metrics.
+        loss = convert_custom_objects(training_config['loss'])
+        metrics = convert_custom_objects(training_config['metrics'])
+        sample_weight_mode = training_config['sample_weight_mode']
+        loss_weights = training_config['loss_weights']
 
-            # Set optimizer weights.
-            if 'optimizer_weights' in f:
-                # Build train function (to get weight updates).
-                if model.__class__.__name__ == 'Sequential':
-                    model.model._make_train_function()
-                else:
-                    model._make_train_function()
-                optimizer_weights_group = f['optimizer_weights']
-                optimizer_weight_names = [
-                    n.decode('utf8') for n in
-                    optimizer_weights_group.attrs['weight_names']]
-                optimizer_weight_values = [optimizer_weights_group[n] for n in
-                                           optimizer_weight_names]
-                try:
-                    model.optimizer.set_weights(optimizer_weight_values)
-                except ValueError:
-                    warnings.warn('Error in loading the saved optimizer '
-                                  'state. As a result, your model is '
-                                  'starting with a freshly initialized '
-                                  'optimizer.')
+        # Compile model.
+        model.compile(optimizer=optimizer,
+                      loss=loss,
+                      metrics=metrics,
+                      loss_weights=loss_weights,
+                      sample_weight_mode=sample_weight_mode)
+
+        # Set optimizer weights.
+        if 'optimizer_weights' in f:
+            # Build train function (to get weight updates).
+            if model.__class__.__name__ == 'Sequential':
+                model.model._make_train_function()
+            else:
+                model._make_train_function()
+            optimizer_weights_group = f['optimizer_weights']
+            optimizer_weight_names = [
+                n.decode('utf8') for n in
+                optimizer_weights_group.attrs['weight_names']]
+            optimizer_weight_values = [optimizer_weights_group[n] for n in
+                                       optimizer_weight_names]
+            try:
+                model.optimizer.set_weights(optimizer_weight_values)
+            except ValueError:
+                warnings.warn('Error in loading the saved optimizer '
+                              'state. As a result, your model is '
+                              'starting with a freshly initialized '
+                              'optimizer.')
+        return model
     finally:
         if opened_new_file:
             f.close()
-    return model
 
 
 def model_from_config(config, custom_objects=None):
@@ -433,7 +434,7 @@ def load_attributes_from_hdf5_group(group, name):
         chunk_id = 0
         while ('%s%d' % (name, chunk_id)) in group.attrs:
             data.extend([n.decode('utf8')
-                         for n in group.attrs['%s%d' % (name, chunk_id)]])
+                        for n in group.attrs['%s%d' % (name, chunk_id)]])
             chunk_id += 1
     return data
 
@@ -472,7 +473,7 @@ def preprocess_weights_for_loading(layer, weights,
                                    original_keras_version=None,
                                    original_backend=None,
                                    reshape=False):
-    """Converts layers weights from Keras 1 format to Keras 2 and also weights of CuDNN layers in Keras 2.
+    """Converts layers weights from Keras 1 format to Keras 2.
 
     # Arguments
         layer: Layer instance.
@@ -486,14 +487,7 @@ def preprocess_weights_for_loading(layer, weights,
     # Returns
         A list of weights values (Numpy arrays).
     """
-    def convert_nested_bidirectional(weights):
-        """Converts layers nested in `Bidirectional` wrapper by `preprocess_weights_for_loading()`.
-
-        # Arguments
-            weights: List of weights values (Numpy arrays).
-        # Returns
-            A list of weights values (Numpy arrays).
-        """
+    if layer.__class__.__name__ == 'Bidirectional':
         num_weights_per_layer = len(weights) // 2
         forward_weights = preprocess_weights_for_loading(layer.forward_layer,
                                                          weights[:num_weights_per_layer],
@@ -503,48 +497,7 @@ def preprocess_weights_for_loading(layer, weights,
                                                           weights[num_weights_per_layer:],
                                                           original_keras_version,
                                                           original_backend)
-        return forward_weights + backward_weights
-
-    def convert_nested_model(weights):
-        """Converts layers nested in `Model` or `Sequential` by `preprocess_weights_for_loading()`.
-
-        # Arguments
-            weights: List of weights values (Numpy arrays).
-        # Returns
-            A list of weights values (Numpy arrays).
-        """
-        new_weights = []
-        # trainable weights
-        for sublayer in layer.layers:
-            num_weights = len(sublayer.trainable_weights)
-            if num_weights > 0:
-                new_weights.extend(preprocess_weights_for_loading(
-                    layer=sublayer,
-                    weights=weights[:num_weights],
-                    original_keras_version=original_keras_version,
-                    original_backend=original_backend))
-                weights = weights[num_weights:]
-
-        # non-trainable weights
-        for sublayer in layer.layers:
-            num_weights = len([l for l in sublayer.weights
-                               if l not in sublayer.trainable_weights])
-            if num_weights > 0:
-                new_weights.extend(preprocess_weights_for_loading(
-                    layer=sublayer,
-                    weights=weights[:num_weights],
-                    original_keras_version=original_keras_version,
-                    original_backend=original_backend))
-                weights = weights[num_weights:]
-        return new_weights
-
-    # Convert layers nested in Bidirectional/Model/Sequential.
-    # Both transformation should be ran for both Keras 1->2 conversion
-    # and for conversion of CuDNN layers.
-    if layer.__class__.__name__ == 'Bidirectional':
-        weights = convert_nested_bidirectional(weights)
-    elif layer.__class__.__name__ in ['Model', 'Sequential']:
-        weights = convert_nested_model(weights)
+        weights = forward_weights + backward_weights
 
     if original_keras_version == '1':
         if layer.__class__.__name__ == 'TimeDistributed':
@@ -638,6 +591,32 @@ def preprocess_weights_for_loading(layer, weights,
                                                     (2, 3, 1, 0))
                 weights = [kernel, recurrent_kernel, bias]
 
+        if layer.__class__.__name__ in ['Model', 'Sequential']:
+            new_weights = []
+            # trainable weights
+            for sublayer in layer.layers:
+                num_weights = len(sublayer.trainable_weights)
+                if num_weights > 0:
+                    new_weights.extend(preprocess_weights_for_loading(
+                        layer=sublayer,
+                        weights=weights[:num_weights],
+                        original_keras_version=original_keras_version,
+                        original_backend=original_backend))
+                    weights = weights[num_weights:]
+
+            # non-trainable weights
+            for sublayer in layer.layers:
+                num_weights = len([l for l in sublayer.weights
+                                  if l not in sublayer.trainable_weights])
+                if num_weights > 0:
+                    new_weights.extend(preprocess_weights_for_loading(
+                        layer=sublayer,
+                        weights=weights[:num_weights],
+                        original_keras_version=original_keras_version,
+                        original_backend=original_backend))
+                    weights = weights[num_weights:]
+            weights = new_weights
+
     conv_layers = ['Conv1D',
                    'Conv2D',
                    'Conv3D',
@@ -666,7 +645,6 @@ def preprocess_weights_for_loading(layer, weights,
             if layer.__class__.__name__ == 'ConvLSTM2D':
                 weights[1] = np.transpose(weights[1], (3, 2, 0, 1))
 
-    # convert CuDNN layers
     weights = _convert_rnn_weights(layer, weights)
 
     return weights
@@ -785,7 +763,7 @@ def _convert_rnn_weights(layer, weights):
         def convert_weights(weights, from_cudnn=True):
             kernels = transform_kernels(weights[0], transpose_input(from_cudnn), n_gates)
             recurrent_kernels = transform_kernels(weights[1], lambda k: k.T, n_gates)
-            biases = np.array(weights[2]).reshape((2, -1) if from_cudnn else -1)
+            biases = weights[2].reshape((2, -1) if from_cudnn else -1)
             return [kernels, recurrent_kernels, biases]
 
         if bias_shape == (2 * units * n_gates,):
