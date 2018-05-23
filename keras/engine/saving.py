@@ -23,6 +23,16 @@ except ImportError:
     h5py = None
 
 
+_example_var = K.variable(0)
+_example_const = K.constant(0)
+def _ensure_not_var(x):
+  if isinstance(x, _example_var.__class__):
+    return K.get_value(x)
+  if isinstance(x, _example_const.__class__):
+    return K.get_value(x)
+  return x
+
+
 def save_model(model, filepath, overwrite=True, include_optimizer=True):
     """Save a model to a HDF5 file.
 
@@ -143,7 +153,7 @@ def save_model(model, filepath, overwrite=True, include_optimizer=True):
                     'loss': model.loss,
                     'metrics': model.metrics,
                     'sample_weight_mode': model.sample_weight_mode,
-                    'loss_weights': model.loss_weights,
+                    'loss_weights': [_ensure_not_var(x) for x in model.loss_weights],
                 }, default=get_json_type).encode('utf8')
 
                 # Save optimizer weights.
